@@ -21,6 +21,7 @@ const RetryAttempts int = 3
 const RetryCtxKey contextKey = "retry"
 
 type Backend struct {
+	Name              string
 	URL               *url.URL
 	ReverseProxy      *httputil.ReverseProxy
 	Alive             bool
@@ -171,9 +172,14 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+type BackendConfig struct {
+	URL  string `json:"url"`
+	Name string `json:"name"`
+}
+
 type Config struct {
-	LBPort   int      `json:"lb_port"`
-	Backends []string `json:"backends"`
+	LBPort   int             `json:"lb_port"`
+	Backends []BackendConfig `json:"backends"`
 }
 
 func LoadConfig(file string) (*Config, error) {
@@ -254,17 +260,17 @@ func (s *ServerPool) ServeDashboard(w http.ResponseWriter, r *http.Request) {
 		
 		<div class="grid">`
 
-	for i, b := range s.backends {
-		alive := b.IsAlive()
+	for _, backend := range s.backends {
+		alive := backend.IsAlive()
 		statusBadge := "<span class='badge up'>ONLINE</span>"
 
 		if !alive {
 			statusBadge = "<span class='badge down'>OFFLINE</span>"
 		}
 
-		active := atomic.LoadInt64(&b.ActiveConnections)
-		total := atomic.LoadUint64(&b.TotalRequests)
-		failed := atomic.LoadUint64(&b.FailedRequests)
+		active := atomic.LoadInt64(&backend.ActiveConnections)
+		total := atomic.LoadUint64(&backend.TotalRequests)
+		failed := atomic.LoadUint64(&backend.FailedRequests)
 		errorRate := 0.0
 
 		if total > 0 {
@@ -274,7 +280,7 @@ func (s *ServerPool) ServeDashboard(w http.ResponseWriter, r *http.Request) {
 		html += fmt.Sprintf(`
 			<div class="card">
 				<div class="header">
-					<span class="url">Backend_%02d</span>
+					<span class="url">%s</span>
 					%s
 				</div>
 				<div style="font-size: 0.8em; color: #94a3b8; margin-bottom: 15px;">%s</div>
@@ -297,7 +303,7 @@ func (s *ServerPool) ServeDashboard(w http.ResponseWriter, r *http.Request) {
 					</div>
 				</div>
 			</div>
-		`, i+1, statusBadge, b.URL, active, total, failed, errorRate)
+		`, backend.Name, statusBadge, backend.URL, active, total, failed, errorRate)
 	}
 
 	html += `</div>
@@ -326,7 +332,7 @@ func main() {
 	serverPool := &ServerPool{}
 
 	for _, u := range config.Backends {
-		serverURL, err := url.Parse(u)
+		serverURL, err := url.Parse(u.URL)
 
 		if err != nil {
 			log.Fatalf("Invalid backend URL: %v", err)
@@ -365,6 +371,7 @@ func main() {
 		}
 
 		serverPool.AddBackend(&Backend{
+			Name:         u.Name,
 			URL:          serverURL,
 			ReverseProxy: proxy,
 			Alive:        true,
