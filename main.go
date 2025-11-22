@@ -104,6 +104,34 @@ func (serverPool *ServerPool) StartHealthCheck() {
 	}
 }
 
+type WrappedWriter struct {
+	http.ResponseWriter
+	StatusCode int
+}
+
+// Capture status code before writing it
+func (w *WrappedWriter) WriteHeader(statusCode int) {
+	w.ResponseWriter.WriteHeader(statusCode)
+	w.StatusCode = statusCode
+}
+
+func LoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		// Spy on status code
+		wrapped := &WrappedWriter{
+			ResponseWriter: w,
+			StatusCode:     http.StatusOK,
+		}
+
+		next.ServeHTTP(wrapped, r)
+
+		duration := time.Since(start)
+
+		log.Printf("REQ: %s %s | STATUS: %d | TIME: %v", r.Method, r.URL.Path, wrapped.StatusCode, duration)
+	})
+}
+
 type Config struct {
 	LBPort   int      `json:"lb_port"`
 	Backends []string `json:"backends"`
@@ -160,18 +188,20 @@ func main() {
 
 	go serverPool.StartHealthCheck()
 
+	lbHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peer := serverPool.GetNextPeer()
+
+		if peer != nil {
+			peer.ReverseProxy.ServeHTTP(w, r)
+			return
+		}
+
+		http.Error(w, "Service not available", http.StatusServiceUnavailable)
+	})
+
 	server := http.Server{
-		Addr: fmt.Sprintf(":%d", config.LBPort),
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			peer := serverPool.GetNextPeer()
-
-			if peer != nil {
-				peer.ReverseProxy.ServeHTTP(w, r)
-				return
-			}
-
-			http.Error(w, "Service not available", http.StatusServiceUnavailable)
-		}),
+		Addr:    fmt.Sprintf(":%d", config.LBPort),
+		Handler: LoggingMiddleware(lbHandler),
 	}
 
 	log.Printf("⚖️  Fulcrum Load Balancer starting on port %d\n", config.LBPort)
