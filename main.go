@@ -36,7 +36,7 @@ func main() {
 	fmt.Printf("👉 Configured Backends: %v\n", config.Backends)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Fulcrum is alive! Request recieved at %s\n", r.URL.Path)
+		fmt.Fprintf(w, "Fulcrum is alive! Request received at %s\n", r.URL.Path)
 	})
 
 	listenAddr := fmt.Sprintf(":%d", config.LBPort)

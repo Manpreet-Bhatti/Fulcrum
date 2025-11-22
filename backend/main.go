@@ -13,7 +13,7 @@ func main() {
 	flag.Parse()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("[%s] Recieved request from %s\n", *name, r.RemoteAddr)
+		fmt.Printf("[%s] Received request from %s\n", *name, r.RemoteAddr)
 		fmt.Fprintf(w, "Hello from Backend %s (Port %s)\n", *name, *port)
 	})
 
