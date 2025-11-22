@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,6 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+type contextKey string
+
+const RetryAttempts int = 3
+const RetryCtxKey contextKey = "retry"
 
 type Backend struct {
 	URL               *url.URL
@@ -43,7 +49,31 @@ func (serverPool *ServerPool) AddBackend(backend *Backend) {
 	serverPool.backends = append(serverPool.backends, backend)
 }
 
-// Get server with the least number of active connections
+func (serverPool *ServerPool) nextIndex() int {
+	return int(atomic.AddUint64(&serverPool.current, uint64(1)) % uint64(len(serverPool.backends)))
+}
+
+// Returns the next ALIVE backend using Round Robin
+func (serverPool *ServerPool) GetNextPeer() *Backend {
+	next := serverPool.nextIndex()
+	l := len(serverPool.backends) + next
+
+	for i := next; i < l; i++ {
+		idx := i % len(serverPool.backends)
+
+		if serverPool.backends[idx].IsAlive() {
+			if i != next {
+				atomic.StoreUint64(&serverPool.current, uint64(idx))
+			}
+
+			return serverPool.backends[idx]
+		}
+	}
+
+	return nil
+}
+
+// Returns the server with the least number of active connections
 func (serverPool *ServerPool) GetNextPeerLeastConnections() *Backend {
 	var bestPeer *Backend = nil
 	var minConns int64 = -1
@@ -76,6 +106,15 @@ func isBackendAlive(u *url.URL) bool {
 	_ = conn.Close()
 
 	return true
+}
+
+func (serverPool *ServerPool) MarkBackendStatus(u *url.URL, alive bool) {
+	for _, backend := range serverPool.backends {
+		if backend.URL.String() == u.String() {
+			backend.SetAlive(alive)
+			break
+		}
+	}
 }
 
 func (serverPool *ServerPool) HealthCheck() {
@@ -168,11 +207,29 @@ func main() {
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(serverURL)
-		proxy.Director = func(req *http.Request) {
-			req.Header.Add("X-Forwarded-Host", req.Host)
-			req.Header.Add("X-Origin-Host", serverURL.Host)
-			req.URL.Scheme = serverURL.Scheme
-			req.URL.Host = serverURL.Host
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) {
+			log.Printf("[%s] %s", serverURL.Host, e.Error())
+
+			serverPool.MarkBackendStatus(serverURL, false)
+
+			retries, _ := r.Context().Value(RetryCtxKey).(int)
+
+			if retries < RetryAttempts {
+				retryPeer := serverPool.GetNextPeer()
+
+				if retryPeer != nil {
+					log.Printf("[Fulcrum] Retrying request on %s (Attempt %d)", retryPeer.URL, retries+1)
+
+					ctx := context.WithValue(r.Context(), RetryCtxKey, retries+1)
+
+					retryPeer.ReverseProxy.ServeHTTP(w, r.WithContext(ctx))
+
+					return
+				}
+			}
+
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("[Fulcrum] All backends failed"))
 		}
 
 		serverPool.AddBackend(&Backend{
@@ -180,19 +237,18 @@ func main() {
 			ReverseProxy: proxy,
 			Alive:        true,
 		})
-
-		log.Printf("✅ Configured backend: %s\n", serverURL)
 	}
 
 	go serverPool.StartHealthCheck()
 
 	lbHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), RetryCtxKey, 0)
 		peer := serverPool.GetNextPeerLeastConnections()
 
 		if peer != nil {
 			atomic.AddInt64(&peer.ActiveConnections, 1)
 			defer atomic.AddInt64(&peer.ActiveConnections, -1)
-			peer.ReverseProxy.ServeHTTP(w, r)
+			peer.ReverseProxy.ServeHTTP(w, r.WithContext(ctx))
 
 			return
 		}
