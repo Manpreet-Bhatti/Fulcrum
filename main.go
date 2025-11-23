@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Manpreet-Bhatti/Fulcrum/config"
+	"github.com/Manpreet-Bhatti/Fulcrum/limiter"
 	"github.com/Manpreet-Bhatti/Fulcrum/middleware"
 	"github.com/Manpreet-Bhatti/Fulcrum/pool"
 )
@@ -113,9 +115,25 @@ func main() {
 		http.ListenAndServe(":8081", http.HandlerFunc(serverPool.ServeDashboard))
 	}()
 
+	rateLimiter := limiter.NewIPRateLimiter(10, 20)
+
 	lbHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+
+		if err != nil {
+			ip = r.RemoteAddr
+		}
+
+		limiter := rateLimiter.GetLimiter(ip)
+
+		if !limiter.Allow() {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), pool.RetryCtxKey, 0)
-		peer := serverPool.GetNextPeerLeastConnections()
+
+		peer := serverPool.GetNextPeer()
 
 		if peer != nil {
 			atomic.AddInt64(&peer.ActiveConnections, 1)
