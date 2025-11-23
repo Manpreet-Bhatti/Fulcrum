@@ -67,13 +67,13 @@ This repo includes a helper tool to spin up test servers. Open 3 terminal tabs:
 
 ```bash
 # Terminal 1
-go run backend/main.go -port 5001 -name "Instance-01"
+go run backend/main.go -port 5001 -name "backend-1"
 
 # Terminal 2
-go run backend/main.go -port 5002 -name "Instance-02"
+go run backend/main.go -port 5002 -name "backend-2"
 
 # Terminal 3
-go run backend/main.go -port 5003 -name "Instance-03"
+go run backend/main.go -port 5003 -name "backend-3"
 ```
 
 4. **Run Fulcrum**
@@ -81,3 +81,29 @@ go run backend/main.go -port 5003 -name "Instance-03"
 ```bash
 go run main.go
 ```
+
+## 🎮 Usage & Demo
+
+**Send Traffic**
+
+Send requests to the load balancer:
+
+```bash
+curl http://localhost:8000
+```
+
+*Observe the backend logs to see the traffic rotating*
+
+**View Dashboard**
+
+Open your browser and navigate to `http://localhost:8081`
+
+- Watch **Active Requests** spike during load.
+- Kill a backend server and watch the status turn **OFFLINE**.
+- Restart the backend server and watch it self-heal to **ONLINE**.
+
+**Simulate Failure (Retries)**
+
+1. Kill `backend-1`.
+2. Run `curl -v http://localhost:8000`.
+3. Fulcrum will detect the failure, log a retry, and serve the response from `backend-2` without the client noticing.
